@@ -1,5 +1,56 @@
 # GenAIProject
 AI Misinformation Detection and Intelligent Fact-Checker System
+misinformation-detector/
+│
+├── README.md
+├── requirements.txt
+├── .gitignore
+│
+├── data/
+│   ├── raw/                          # Original datasets
+│   ├── processed/                    # Cleaned datasets
+│   ├── models/                       # Saved model files (.pkl)
+│   └── platform_profiles.json        # Navya: Platform risk profiles
+│
+├── notebooks/
+│   ├── 01_eda.ipynb                 # Navya: EDA
+│   ├── 02_features.ipynb            # Pulkit: Feature engineering
+│   ├── 03_models.ipynb              # Manya: Model training
+│   └── 04_platform_analysis.ipynb   # Navya: Platform analysis
+│
+├── data_pipeline.py                 # Pulkit: Data cleaning
+├── features.py                      # Pulkit: Feature engineering
+├── platform_features.py             # Navya: Platform-specific features
+├── model.py                         # Manya: Model training & prediction
+├── platform_risk.py                 # Navya: Platform risk scoring
+├── app.py                           # Shlok: API (Flask/FastAPI)
+├── database.py                      # Pulkit: Database operations
+├── config.py                        # Configuration
+│
+├── frontend/
+│   ├── components/
+│   │   ├── Dashboard.jsx            # Monish
+│   │   ├── SubmissionForm.jsx       # Monish
+│   │   └── TriageQueue.jsx          # Monish
+│   ├── api.js                       # Pravith: API integration
+│   ├── App.jsx
+│   ├── index.js
+│   └── package.json
+│
+├── tests/
+│   ├── test_pipeline.py
+│   ├── test_model.py
+│   └── test_api.py
+│
+├── scripts/
+│   ├── train.py                     # Train models
+│   └── predict.py                   # Batch predictions
+│
+└── docs/
+    ├── API.md                       # Shlok: API documentation
+    └── MODEL.md                     # Manya & Navya: Model details
+
+
 Days 1-2: Foundation & EDA
 
 Navya (Analysis Lead)
