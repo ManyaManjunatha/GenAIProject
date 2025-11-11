@@ -121,7 +121,7 @@ class MisinformationDetector:
         self.X_test = X_test
         self.y_test = y_test
 
-        print(f"\n✅ Best Model: {best_model_name} (AUC: {results[best_model_name]['auc']:.4f})")
+        print(f"\n Best Model: {best_model_name} (AUC: {results[best_model_name]['auc']:.4f})")
 
     # ------------------------------
     # EVALUATION
@@ -192,10 +192,10 @@ class MisinformationDetector:
         risk = (ml_score * 0.6) + ((1 - wiki_conf) * 0.4)
         risk_percent = risk * 100
 
-        print(f"\n🧠 ML Predicted Risk: {ml_score*100:.2f}%")
-        print(f"📘 Wikipedia Confidence: {wiki_conf*100:.2f}%")
-        print(f"🧾 Summary: {wiki_summary}")
-        print(f"⚠️ Final Misinformation Risk: {risk_percent:.2f}% ({self.best_model_name})")
+        print(f"\n ML Predicted Risk: {ml_score*100:.2f}%")
+        print(f" Wikipedia Confidence: {wiki_conf*100:.2f}%")
+        print(f" Summary: {wiki_summary}")
+        print(f" Final Misinformation Risk: {risk_percent:.2f}% ({self.best_model_name})")
 
         return risk_percent
 
