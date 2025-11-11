@@ -2,104 +2,115 @@ import wikipedia
 import numpy as np
 import pandas as pd
 import re
+import pickle
 from sentence_transformers import SentenceTransformer, util
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 
-# ---------------------------
-# STEP 1 — Data Preparation
-# ---------------------------
-data = {
-    'text': [
-        "The earth revolves around the sun",
-        "The moon is made of cheese",
-        "Water boils at 100 degrees Celsius",
-        "Humans can breathe underwater without oxygen tanks",
-        "The Eiffel Tower is in Paris",
-        "Mango is a fruit",
-        "The Great Wall of China is visible from space"
-    ],
-    'label': ['real', 'fake', 'real', 'fake', 'real', 'real', 'fake']
-}
-df = pd.DataFrame(data)
+class MisinformationDetector:
+    def __init__(self):
+        self.model = None
+        self.vectorizer = None
+        self.semantic_model = SentenceTransformer('all-MiniLM-L6-v2')
 
-# ---------------------------
-#  STEP 2 — Model Training
-# ---------------------------
-X_train, X_test, y_train, y_test = train_test_split(df['text'], df['label'], test_size=0.3, random_state=42)
+    def load_data(self, true_path='True.csv', fake_path='Fake.csv'):
+        """Load and combine real/fake datasets"""
+        true_df = pd.read_csv(true_path)
+        fake_df = pd.read_csv(fake_path)
+        true_df['label'] = 'real'
+        fake_df['label'] = 'fake'
+        df = pd.concat([true_df, fake_df], ignore_index=True)
+        df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+        df = df.dropna(subset=['text'])
+        print(f" Loaded {len(df)} articles")
+        return df
 
-vectorizer = TfidfVectorizer(stop_words='english')
-X_train_vec = vectorizer.fit_transform(X_train)
-X_test_vec = vectorizer.transform(X_test)
+    def train_model(self, df):
+        """Train a Random Forest on TF-IDF features"""
+        X_train, X_test, y_train, y_test = train_test_split(df['text'], df['label'],
+                                                            test_size=0.2, random_state=42)
+        self.vectorizer = TfidfVectorizer(stop_words='english', max_features=5000)
+        X_train_vec = self.vectorizer.fit_transform(X_train)
+        X_test_vec = self.vectorizer.transform(X_test)
 
-model = RandomForestClassifier(n_estimators=100, random_state=42)
-model.fit(X_train_vec, y_train)
+        self.model = RandomForestClassifier(n_estimators=300, random_state=42)
+        self.model.fit(X_train_vec, y_train)
 
-y_pred = model.predict(X_test_vec)
-print("\n Classification Report:\n")
-print(classification_report(y_test, y_pred))
+        y_pred = self.model.predict(X_test_vec)
+        print("\n Classification Report:\n")
+        print(classification_report(y_test, y_pred))
 
-# ---------------------------
-#  STEP 3 — Wikipedia Verification + Semantic Similarity
-# ---------------------------
-semantic_model = SentenceTransformer('all-MiniLM-L6-v2')
+        # Save model and vectorizer
+        with open("model.pkl", "wb") as f:
+            pickle.dump(self.model, f)
+        with open("vectorizer.pkl", "wb") as f:
+            pickle.dump(self.vectorizer, f)
 
-def clean_text(text):
-    return re.sub(r'[^a-zA-Z0-9\s]', '', text.lower())
+        print(" Model and vectorizer saved successfully!")
 
-def check_with_wikipedia(statement):
-    try:
-        search_results = wikipedia.search(statement)
-        if not search_results:
-            return None, 0.0, None
+    # ---------------- Wikipedia + Verification ----------------
+    def clean_text(self, text):
+        return re.sub(r'[^a-zA-Z0-9\s]', '', str(text).lower())
 
-        page_title = search_results[0]
-        summary = wikipedia.summary(page_title, sentences=2)
-        return page_title, summary, wikipedia.page(page_title).url
-    except Exception:
-        return None, None, None
+    def check_with_wikipedia(self, statement):
+        try:
+            search_results = wikipedia.search(statement)
+            if not search_results:
+                return None, None, None
+            title = search_results[0]
+            summary = wikipedia.summary(title, sentences=2)
+            link = wikipedia.page(title).url
+            return title, summary, link
+        except Exception:
+            return None, None, None
 
-def verify_misinformation(statement):
-    # Step 1: Predict with ML model
-    input_vec = vectorizer.transform([statement])
-    model_pred = model.predict(input_vec)[0]
-    model_prob = model.predict_proba(input_vec)[0]
-    confidence = max(model_prob)
+    def verify(self, statement):
+        """Run misinformation detection + semantic verification"""
+        if self.model is None or self.vectorizer is None:
+            with open("model.pkl", "rb") as f:
+                self.model = pickle.load(f)
+            with open("vectorizer.pkl", "rb") as f:
+                self.vectorizer = pickle.load(f)
 
-    # Step 2: Wikipedia check
-    title, summary, link = check_with_wikipedia(statement)
-    if summary:
-        emb1 = semantic_model.encode(clean_text(statement), convert_to_tensor=True)
-        emb2 = semantic_model.encode(clean_text(summary), convert_to_tensor=True)
-        similarity = float(util.cos_sim(emb1, emb2).item())
-    else:
-        similarity = 0.0
+        X_vec = self.vectorizer.transform([statement])
+        model_pred = self.model.predict(X_vec)[0]
+        model_prob = self.model.predict_proba(X_vec)[0]
+        confidence = max(model_prob)
 
-    # Step 3: Combined Score
-    final_score = 0.6 * confidence + 0.4 * similarity
+        title, summary, link = self.check_with_wikipedia(statement)
+        if summary:
+            emb1 = self.semantic_model.encode(self.clean_text(statement), convert_to_tensor=True)
+            emb2 = self.semantic_model.encode(self.clean_text(summary), convert_to_tensor=True)
+            similarity = float(util.cos_sim(emb1, emb2).item())
+        else:
+            similarity = 0.0
 
-    label = "Misinformation" if final_score < 0.5 else "Likely True"
+        final_score = 0.6 * confidence + 0.4 * similarity
+        label = "Misinformation" if final_score < 0.5 else "Likely True"
 
-    return {
-        "input": statement,
-        "model_label": model_pred,
-        "model_confidence": round(confidence * 100, 2),
-        "wikipedia_article": title,
-        "similarity_score": round(similarity, 2),
-        "final_label": label,
-        "final_score": round(final_score * 100, 2),
-        "wiki_summary": summary,
-        "wiki_link": link
-    }
+        return {
+            "input": statement,
+            "model_label": model_pred,
+            "model_confidence": round(confidence * 100, 2),
+            "wikipedia_article": title,
+            "similarity_score": round(similarity, 2),
+            "final_label": label,
+            "final_score": round(final_score * 100, 2),
+            "wiki_summary": summary,
+            "wiki_link": link
+        }
 
-# ---------------------------
-#  STEP 4 — Test the Model
-# ---------------------------
-user_input = "Breaking news Mango is a fruit"
-result = verify_misinformation(user_input)
+# ---------------- Test ----------------
+if __name__ == "__main__":
+    detector = MisinformationDetector()
+    df = detector.load_data("True.csv", "Fake.csv")
+    detector.train_model(df)
 
-print("\n Analysis Result:")
-for k, v in result.items():
-    print(f"{k}: {v}")
+    user_input = "Breaking news Mango is a fruit"
+    result = detector.verify(user_input)
+
+    print("\n Analysis Result:")
+    for k, v in result.items():
+        print(f"{k}: {v}")
