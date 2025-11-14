@@ -1,182 +1,145 @@
 # app.py
 import streamlit as st
-import pickle
 import re
+import time
+from xgboost_predict import predict_xgb
 import wikipedia
-import pandas as pd
-import numpy as np
-from typing import Optional, Dict
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
-# -----------------------------
-# 🔧 Helper Functions
-# -----------------------------
-
-def preprocess_text(text: str) -> str:
-    """Basic cleaning: remove links, punctuation, etc."""
-    text = re.sub(r"http\S+", "", text)
-    text = re.sub(r"[^A-Za-z0-9\s]", "", text)
-    return text.strip()
-
-def extract_features(text: str) -> pd.DataFrame:
-    """Generate engineered + combined features to match training format."""
-    df = pd.DataFrame()
-    df["title_length"] = [len(text)]
-    df["title_words"] = [len(text.split())]
-    df["text_length"] = [len(text)]
-    df["text_words"] = [len(text.split())]
-    df["exclamation_count"] = [text.count("!")]
-    df["question_count"] = [text.count("?")]
-    df["quote_count"] = [text.count('"')]
-    df["url_count"] = [len(re.findall(r"http[s]?://\S+", text))]
-    df["number_count"] = [len(re.findall(r"\d+", text))]
-    df["caps_ratio"] = [sum(1 for c in text if c.isupper()) / max(len(text), 1)]
-
-    emotional_words = [
-        "shocking", "amazing", "unbelievable", "secret", "exposed",
-        "truth", "alert", "warning", "urgent", "breaking"
-    ]
-    df["emotional_words"] = [sum(text.lower().count(w) for w in emotional_words)]
-
-    df["combined_text"] = [text]
-    return df
-
-def extract_keywords(text: str, top_n: int = 5):
-    words = re.findall(r"[a-zA-Z]+", text.lower())
-    freq = {}
-    for w in words:
-        freq[w] = freq.get(w, 0) + 1
-    return sorted(freq, key=freq.get, reverse=True)[:top_n]
-
-# -----------------------------
-# 🌐 Wikipedia Verification
-# -----------------------------
-
-def query_wikipedia_summary(text: str, max_chars: int = 600) -> Optional[Dict]:
-    """Search Wikipedia for the given text and return best match."""
-    try:
-        results = wikipedia.search(text, results=1)
-        if not results:
-            return None
-        title = results[0]
-        summary = wikipedia.summary(title, sentences=3)
-        return {"title": title, "summary": summary[:max_chars]}
-    except Exception:
-        return None
-
-def compute_overlap_similarity(a: str, b: str) -> float:
-    """Compute word overlap ratio."""
-    words_a = set(re.findall(r"[a-zA-Z]+", a.lower()))
-    words_b = set(re.findall(r"[a-zA-Z]+", b.lower()))
-    if not words_a or not words_b:
-        return 0.0
-    return len(words_a.intersection(words_b)) / len(words_a.union(words_b))
-
-# -----------------------------
-# 🧠 Prediction Logic
-# -----------------------------
-
-def model_predict(df: pd.DataFrame, vectorizer, model):
-    """Run trained ML model and return predictions."""
-    X_eng = df.drop(columns=["combined_text"]).fillna(0).values
-    X_tfidf = vectorizer.transform(df["combined_text"])
-    X = np.hstack([X_eng, X_tfidf.toarray()])
-    proba = model.predict_proba(X)[0]
-    label_idx = np.argmax(proba)
-    label = "True" if label_idx == 1 else "Misinformation"
-    conf = round(float(proba[label_idx]), 2)
-    return label, conf
-
-def rule_based_predict(text: str):
-    suspicious = ["breaking", "shocking", "alert", "conspiracy", "leak"]
-    score = sum(w in text.lower() for w in suspicious) / len(suspicious)
-    label = "Misinformation" if score > 0.3 else "True"
-    return label, round(0.5 + score / 2, 2)
-
-def detect_misinformation(text: str, vectorizer=None, model=None):
-    text = preprocess_text(text)
-    if not text:
-        return {"error": "Empty input"}
-
-    # Step 1: Generate features
-    df = extract_features(text)
-
-    # Step 2: Prediction
-    if vectorizer is not None and model is not None:
-        label, conf = model_predict(df, vectorizer, model)
-    else:
-        label, conf = rule_based_predict(text)
-
-    # Step 3: Wikipedia verification
-    wiki_data = query_wikipedia_summary(text)
-    wiki_similarity = 0.0
-    if wiki_data:
-        wiki_similarity = compute_overlap_similarity(text, wiki_data["summary"])
-        if wiki_similarity >= 0.6 and label == "Misinformation":
-            label = "True"
-            conf = min(0.9, conf + 0.1)
-        elif wiki_similarity <= 0.2 and label == "True":
-            label = "Uncertain"
-            conf = min(conf, 0.6)
-
-    return {
-        "label": label,
-        "confidence": conf,
-        "wiki": wiki_data,
-        "wiki_similarity": wiki_similarity,
-        "keywords": extract_keywords(text)
-    }
-
-# -----------------------------
-# 🎨 Streamlit UI
-# -----------------------------
-
-st.set_page_config(page_title="AI Misinformation Detector", page_icon="🧠", layout="centered")
-st.title("🧠 AI-Powered Misinformation Detector")
-st.markdown("Detect fake or misleading information using AI + Wikipedia verification.")
-
-# Load saved model + vectorizer
-model, vectorizer = None, None
-try:
-    with open("model.pkl", "rb") as f:
-        model = pickle.load(f)
-    with open("vectorizer.pkl", "rb") as f:
-        vectorizer = pickle.load(f)
-    st.success("✅ Model and vectorizer loaded successfully!")
-except Exception as e:
-    st.warning(f"⚠️ Could not load model/vectorizer: {e}")
-
-# -----------------------------
-# 💬 User Input
-# -----------------------------
-text_input = st.text_area(
-    "Enter a statement or post:",
-    height=150,
-    placeholder="e.g. Joe Biden has been sniped in a recent gathering"
+# ---------------------------
+# Streamlit Page Config
+# ---------------------------
+st.set_page_config(
+    page_title="AI News Misinformation Detector",
+    page_icon="🧠",
+    layout="centered"
 )
 
-if st.button("Analyze"):
-    if text_input.strip():
-        with st.spinner("Analyzing..."):
-            result = detect_misinformation(text_input, vectorizer, model)
+# ---------------------------
+# Custom CSS for UI Polish
+# ---------------------------
+st.markdown("""
+    <style>
+    .title { font-size: 32px; font-weight: 700; text-align:center; margin-bottom:5px; }
+    .subtitle { color: #6c757d; text-align:center; margin-bottom: 25px; }
+    .result-card { border-radius: 15px; padding: 18px; box-shadow: 0 6px 18px rgba(0,0,0,0.08); margin-top:15px; }
+    </style>
+""", unsafe_allow_html=True)
 
-        if "error" in result:
-            st.error(result["error"])
+# ---------------------------
+# Helper: Wikipedia Verification
+# ---------------------------
+def wiki_fact_check(text):
+    try:
+        search_results = wikipedia.search(text)
+        if not search_results:
+            return {"verdict": "Not Found", "similarity": 0.0, "summary": ""}
+
+        page_title = search_results[0]
+        summary = wikipedia.summary(page_title, sentences=3)
+
+        tfidf = TfidfVectorizer(stop_words='english')
+        tfidf_matrix = tfidf.fit_transform([text, summary])
+        similarity = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
+
+        if similarity > 0.65:
+            verdict = "Likely True"
+        elif similarity > 0.35:
+            verdict = "Partially Supported"
         else:
-            st.subheader("🧩 Analysis Result")
-            st.metric("Label", result["label"], f"{result['confidence']*100:.1f}% confidence")
+            verdict = "Likely False"
 
-            wiki = result.get("wiki")
-            sim = result.get("wiki_similarity", 0)
-            if wiki:
-                st.markdown("#### 🌐 Wikipedia Cross-check:")
-                st.write(f"**Matched Article:** {wiki['title']}")
-                st.caption(f"Similarity score: {sim:.2f}")
-                st.info(wiki['summary'])
-                st.markdown(f"[🔗 View on Wikipedia](https://en.wikipedia.org/wiki/{wiki['title'].replace(' ', '_')})")
-            else:
-                st.warning("No relevant Wikipedia page found for this claim.")
+        return {"verdict": verdict, "similarity": similarity, "summary": summary, "source": page_title}
 
-            st.markdown("#### 🔑 Highlighted Keywords:")
-            st.write(", ".join(result["keywords"]))
+    except Exception:
+        return {"verdict": "Error", "similarity": 0.0, "summary": ""}
+
+# ---------------------------
+# App Header
+# ---------------------------
+st.markdown('<div class="title">🧠 AI News Misinformation Detector</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtitle">Detect and verify the authenticity of news articles using ML + Wikipedia verification</div>', unsafe_allow_html=True)
+st.markdown("---")
+
+# ---------------------------
+# Input Section
+# ---------------------------
+st.subheader("📰 Enter a News Article")
+title = st.text_input("News Title")
+text = st.text_area("Article Text", height=180, placeholder="Paste or type a short news article...")
+
+analyze_btn = st.button("🔍 Analyze")
+
+# ---------------------------
+# Prediction Logic
+# ---------------------------
+if analyze_btn:
+    if not text.strip() and not title.strip():
+        st.warning("Please enter a title or article text.")
     else:
-        st.warning("Please enter a statement to analyze.")
+        with st.spinner("Analyzing..."):
+            time.sleep(0.3)
+            content = title + " " + text
+
+            # Model Prediction
+            label, conf = predict_xgb(content)
+            conf_percent = round(conf * 100, 2)
+
+            # Wikipedia Fact Check
+            wiki_data = wiki_fact_check(title or text[:80])
+
+            # Adjust confidence based on Wiki verdict
+            final_conf = conf
+            if wiki_data['verdict'] == "Likely True":
+                final_conf = min(conf + 0.1, 1.0)
+            elif wiki_data['verdict'] == "Likely False":
+                final_conf = max(conf - 0.1, 0.0)
+            final_conf_percent = round(final_conf * 100, 2)
+
+        # ---------------------------
+        # Result Card
+        # ---------------------------
+        st.markdown('<div class="result-card">', unsafe_allow_html=True)
+
+        if label == "Misinformation":
+            st.markdown("### ❌ Misinformation Detected")
+        else:
+            st.markdown("### ✅ Likely True Information")
+
+        st.metric(label="Confidence", value=f"{final_conf_percent}%")
+        st.progress(int(final_conf_percent))
+
+        st.write("---")
+
+        st.markdown("**🧩 Wikipedia Verification**")
+        if wiki_data["verdict"] == "Not Found":
+            st.warning("No relevant Wikipedia article found.")
+        elif wiki_data["verdict"] == "Error":
+            st.error("Wikipedia check failed.")
+        else:
+            st.info(f"**Verdict:** {wiki_data['verdict']} (Similarity: {wiki_data['similarity']:.2f})")
+            st.caption(f"📖 Source: {wiki_data['source']}")
+            st.write(f"📝 {wiki_data['summary'][:400]}...")
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        st.success("Analysis complete ✅")
+
+# ---------------------------
+# Sidebar Info
+# ---------------------------
+st.sidebar.header("ℹ️ About This App")
+st.sidebar.write("""
+**Purpose:**  
+Detect misinformation in digital news articles using a machine learning model trained on the **WELFake dataset**, enhanced with **Wikipedia-based factual verification**.
+
+**Pipeline:**  
+1. TF-IDF feature extraction  
+2. XGBoost classification  
+3. Wikipedia semantic similarity  
+4. Final confidence scoring
+""")
+
+st.sidebar.write("---")
+st.sidebar.write("Developed by your team 💻")
